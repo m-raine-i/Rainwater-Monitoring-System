@@ -13,3 +13,4 @@ This is a project that serves as a requirement for the completion of Embedded Sy
     Breadboard (optional)
     Spray Bottle to simulate rain (optional)
 # Data is diplayed in Blynk and Google Sheets
+# Fourier Transform, Fourier Series, Decision Tree and Random Forest Algorithm were used in the .ipynb file
