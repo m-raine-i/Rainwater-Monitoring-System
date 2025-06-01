@@ -1,7 +1,7 @@
 import network
 import time
 import urequests
-from machine import Pin, ADC
+from machine import Pin, ADC, deepsleep
 
 # Wi-Fi credentials
 SSID = ""
@@ -19,13 +19,11 @@ TRIG_PIN = 32
 ECHO_PIN = 33
 
 # Container height in cm
-MAX_HEIGHT_CM = 30  # Approximately 12 inches height container
+MAX_HEIGHT_CM = 19.5
 
-# Initialize rain sensor
+# Initialize sensors
 rain_sensor = ADC(Pin(RAIN_SENSOR_PIN))
-rain_sensor.atten(ADC.ATTN_11DB)  # 0 - 3.3V range (0 to 4095)
-
-# Initialize ultrasonic pins
+rain_sensor.atten(ADC.ATTN_11DB)
 trig = Pin(TRIG_PIN, Pin.OUT)
 echo = Pin(ECHO_PIN, Pin.IN)
 
@@ -68,7 +66,6 @@ def send_to_google_sheets(rain_value, timestamp):
     except Exception as e:
         print("Error sending to Google Sheets:", e)
 
-# Classify rain level based on sensor value
 def classify_rain(value):
     if value >= 3000:
         return "No Rain"
@@ -76,12 +73,11 @@ def classify_rain(value):
         return "Light Rain"
     elif value >= 1000:
         return "Moderate Rain"
-    elif value >= 0:
+    elif value >= 1:
         return "Heavy Rain"
     else:
         return "Sensor Error"
 
-# Ultrasonic distance measurement
 def read_distance():
     trig.off()
     time.sleep_us(2)
@@ -105,7 +101,6 @@ def read_distance():
     distance_cm = (duration / 2) / 29.1
     return round(distance_cm, 2)
 
-# Regression-based estimation of rainfall
 def estimate_rain_mm_regression(sensor_value):
     x1, y1 = 500, 10
     x2, y2 = 3500, 0
@@ -138,41 +133,55 @@ def estimate_rain_mm_interpolation(sensor_value):
             return round(y0 + m * (sensor_value - x0), 2)
     return 0
 
-# Main loop
 def main():
     if connect_wifi():
         while True:
             rain_value = rain_sensor.read()
-            rain_level = classify_rain(rain_value)
             distance = read_distance()
 
-            rain_mm_reg = estimate_rain_mm_regression(rain_value)
-            rain_mm_interp = estimate_rain_mm_interpolation(rain_value)
-            distance_str = str(distance) if distance is not None else "Error"
+            has_error = False
+            ultrasonic_status = "OK"
 
-            if distance is not None:
+            if rain_value is None or rain_value < 0 or rain_value > 4095:
+                print("Rain sensor error!")
+                has_error = True
+
+            # Prepare water level value (with fallback to 9999 on ultrasonic error)
+            if distance is not None and 0 <= distance <= MAX_HEIGHT_CM:
                 water_level = round(MAX_HEIGHT_CM - distance, 2)
-                distance_str = str(water_level)
             else:
-                distance_str = "Error"
+                print("Ultrasonic sensor error!")
+                water_level = 0  # Send error flag to Blynk
+                ultrasonic_status = "Sensor Error"
 
-            # Debug
-            print("Rain Value:", rain_value)
-            print("Rain Level:", rain_level)
-            print("Rain (regression):", rain_mm_reg, "mm/h")
-            print("Rain (interpolation):", rain_mm_interp, "mm/h")
-            print("Water Level:", distance_str, "cm")
+            if not has_error:
+                rain_level = classify_rain(rain_value)
+                rain_mm_reg = estimate_rain_mm_regression(rain_value)
+                rain_mm_interp = estimate_rain_mm_interpolation(rain_value)
 
-            # Send to Google Sheets
-            send_to_google_sheets(rain_value, time.time())
+                print("Rain Value:", rain_value)
+                print("Rain Level:", rain_level)
+                print("Rain (regression):", rain_mm_reg, "mm/h")
+                print("Rain (interpolation):", rain_mm_interp, "mm/h")
+                print("Water Level:", water_level, "cm")
+            
+                # Send to Google Sheets
+                send_to_google_sheets(rain_value, time.time())
+            
+                # Send to Blynk
+                send_to_blynk("V0", rain_value)
+                send_to_blynk("V1", rain_level)
+                send_to_blynk("V2", water_level)
+                send_to_blynk("V3", rain_mm_reg)
+                send_to_blynk("V4", rain_mm_interp)
+                send_to_blynk("V5", ultrasonic_status)
+            else:
+                print("Skipping Blynk update due to rain sensor error.")
 
-            # Send to Blynk
-            send_to_blynk("V0", rain_value)              # Raw value
-            send_to_blynk("V1", rain_level)              # Text level
-            send_to_blynk("V2", distance_str)            # Water level
-            send_to_blynk("V3", rain_mm_reg)             # Regression mm/h
-            send_to_blynk("V4", rain_mm_interp)          # Interpolation mm/h
-
-            time.sleep(10)
+            # Dynamic deep sleep
+            if rain_value is not None and rain_value >= 3200:
+                time.sleep(10)  # No rain → sleep 10 sec
+            else:
+                time.sleep(5)  # Rain → sleep 5 sec
 
 main()
